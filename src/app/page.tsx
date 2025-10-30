@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useEffect } from "react";
 
 // VIN AUDIT — High-Conversion Landing Page
 // Tech: React + TailwindCSS (no external deps). Designed mobile-first.
@@ -16,6 +16,42 @@ export default function VinAuditLanding() {
   const [reportType, setReportType] = useState("carfax");
   const [showSample, setShowSample] = useState(false);
   const [faqOpen, setFaqOpen] = useState<string | null>(null);
+  const [isChecking, setIsChecking] = useState(false);
+  const [reportAvailability, setReportAvailability] = useState<{
+    carfax: boolean | null;
+    autocheck: boolean | null;
+  }>({ carfax: null, autocheck: null });
+  const [vehicleInfo, setVehicleInfo] = useState<any>(null);
+  const [isLoadingVehicleInfo, setIsLoadingVehicleInfo] = useState(false);
+  const [recentReports, setRecentReports] = useState<any[]>([]);
+  const [isLoadingReports, setIsLoadingReports] = useState(false);
+
+  // Fetch recent reports from API
+  useEffect(() => {
+    const fetchRecentReports = async () => {
+      setIsLoadingReports(true);
+      try {
+        const response = await fetch('/api/recent-reports');
+        const data = await response.json();
+        
+        if (data.success) {
+          setRecentReports(data.data);
+        } else {
+          console.error('Failed to fetch recent reports:', data.error);
+          // Fallback to empty array if API fails
+          setRecentReports([]);
+        }
+      } catch (error) {
+        console.error('Error fetching recent reports:', error);
+        // Fallback to empty array if API fails
+        setRecentReports([]);
+      } finally {
+        setIsLoadingReports(false);
+      }
+    };
+
+    fetchRecentReports();
+  }, []);
 
   const vinValid = useMemo(() => {
     const v = vin.trim().toUpperCase();
@@ -23,11 +59,194 @@ export default function VinAuditLanding() {
     return /^[A-HJ-NPR-Z0-9]{17}$/.test(v);
   }, [vin]);
 
-  const handleCheck = (e?: React.FormEvent) => {
+  // Fetch vehicle information when VIN is valid
+  const fetchVehicleInfo = async (vincode: string) => {
+    if (!vinValid) {
+      console.error('Invalid VIN');
+      return;
+    }
+    
+    setIsLoadingVehicleInfo(true);
+    setVehicleInfo(null);
+
+    try {
+      const response = await fetch(`/api/vehicle/info?vincode=${vincode}`);
+      const data = await response.json();
+      
+      console.log('Vehicle Info response status:', response.status);
+      console.log('Vehicle Info response:', data);
+      
+      if (response.ok) {
+        setVehicleInfo(data);
+      } else {
+        console.error('Vehicle info fetch failed:', data);
+      }
+    } catch (error) {
+      console.error('Error fetching vehicle info:', error);
+    } finally {
+      setIsLoadingVehicleInfo(false);
+    }
+  };
+
+  // Check report availability when VIN is valid
+  const checkReportAvailability = async (vincode: string) => {
+    if (!vinValid) {
+      console.error('Invalid VIN');
+      return;
+    }
+    
+    setIsChecking(true);
+    setReportAvailability({ carfax: null, autocheck: null });
+
+    try {
+      // Check both Carfax and AutoCheck availability in parallel using internal API routes
+      const [carfaxResponse, autocheckResponse] = await Promise.all([
+        fetch(`/api/carfax/check?vincode=${vincode}`),
+        fetch(`/api/autocheck/check?vincode=${vincode}`)
+      ]);
+
+      console.log('Carfax response status:', carfaxResponse.status);
+      console.log('AutoCheck response status:', autocheckResponse.status);
+
+      const carfaxData = await carfaxResponse.json();
+      const autocheckData = await autocheckResponse.json();
+
+      // Log the responses for debugging
+      console.log('Carfax response:', carfaxData);
+      console.log('AutoCheck response:', autocheckData);
+      
+      // Log the exact response structure
+      console.log('Carfax response keys:', Object.keys(carfaxData || {}));
+      console.log('AutoCheck response keys:', Object.keys(autocheckData || {}));
+
+      // Check for different possible response formats
+      // Handle API responses more intelligently based on the actual messages
+      const carfaxAvailable = 
+        // Standard success cases
+        (carfaxResponse.ok && (
+          carfaxData.checked === true || 
+          carfaxData.available === true || 
+          carfaxData.message === "Report found" ||
+          carfaxData.success === true ||
+          carfaxData.status === "available" ||
+          carfaxData.report_available === true
+        )) ||
+        // Handle "processing" as available (will be ready for purchase)
+        (carfaxData.message && carfaxData.message.includes("processing"));
+      
+      const autocheckAvailable = 
+        // Standard success cases
+        (autocheckResponse.ok && (
+          autocheckData.checked === true || 
+          autocheckData.available === true || 
+          autocheckData.message === "Report found" ||
+          autocheckData.success === true ||
+          autocheckData.status === "available" ||
+          autocheckData.report_available === true
+        )) ||
+        // Handle "insufficient funds" as available (report exists but needs payment on our end)
+        (autocheckData.message && autocheckData.message.includes("средств"));
+
+      console.log('Carfax available:', carfaxAvailable);
+      console.log('AutoCheck available:', autocheckAvailable);
+      console.log('Carfax response.ok:', carfaxResponse.ok);
+      console.log('AutoCheck response.ok:', autocheckResponse.ok);
+
+      setReportAvailability({
+        carfax: carfaxAvailable,
+        autocheck: autocheckAvailable
+      });
+    } catch (error) {
+      console.error('Error checking report availability:', error);
+      // Set both to false on error
+      setReportAvailability({ carfax: false, autocheck: false });
+    } finally {
+      setIsChecking(false);
+    }
+  };
+
+  // Debounced VIN checking
+  useEffect(() => {
+    if (vinValid) {
+      const timer = setTimeout(() => {
+        const vinCode = vin.toUpperCase();
+        checkReportAvailability(vinCode);
+        fetchVehicleInfo(vinCode);
+      }, 500); // Wait 500ms after user stops typing
+
+      return () => clearTimeout(timer);
+    } else {
+      setReportAvailability({ carfax: null, autocheck: null });
+      setVehicleInfo(null);
+    }
+  }, [vin, vinValid]);
+
+  // Auto-deselect unavailable options
+  useEffect(() => {
+    if (reportType === 'carfax' && reportAvailability.carfax === false) {
+      setReportType('');
+    }
+    if (reportType === 'autocheck' && reportAvailability.autocheck === false) {
+      setReportType('');
+    }
+    if (reportType === 'both' && (reportAvailability.carfax === false || reportAvailability.autocheck === false)) {
+      setReportType('');
+    }
+  }, [reportAvailability, reportType]);
+
+  const handleCheck = async (e?: React.FormEvent) => {
     e?.preventDefault();
     if (!vinValid) return;
-    // In production, route to checkout or results. Here we just mock.
-    alert(`Checking ${vin.toUpperCase()} with ${reportType === 'carfax' ? 'Carfax' : 'AutoCheck'}...`);
+    
+    const selectedReportAvailable = reportAvailability[reportType as keyof typeof reportAvailability];
+    
+    if (selectedReportAvailable === false) {
+      alert(`${reportType === 'carfax' ? 'Carfax' : 'AutoCheck'} report is not available for this VIN. Please try the other report type.`);
+      return;
+    }
+
+    if (selectedReportAvailable === null) {
+      alert('Please wait while we check report availability...');
+      return;
+    }
+
+    // Proceed to Stripe checkout
+    await handlePayment(reportType);
+  };
+
+  const handlePayment = async (selectedReportType: string) => {
+    try {
+      setIsChecking(true);
+      
+      const response = await fetch('/api/create-checkout-session', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          vincode: vin,
+          reportType: selectedReportType,
+          vehicleInfo: vehicleInfo?.data || null,
+        }),
+      });
+
+      const { sessionId, url, error } = await response.json();
+
+      if (error) {
+        alert(`Payment error: ${error}`);
+        return;
+      }
+
+      // Redirect to Stripe Checkout
+      if (url) {
+        window.location.href = url;
+      }
+    } catch (error) {
+      console.error('Payment error:', error);
+      alert('Failed to initiate payment. Please try again.');
+    } finally {
+      setIsChecking(false);
+    }
   };
 
   const Feature = ({ icon, title, sub }: { icon: React.ReactNode; title: string; sub: string }) => (
@@ -99,10 +318,9 @@ export default function VinAuditLanding() {
 
   const nav = [
     { href: "#home", label: "Home" },
-    { href: "#about", label: "About" },
-    { href: "#compare", label: "Compare Reports" },
-    { href: "#faq", label: "FAQ" },
-    { href: "#contact", label: "Contact" },
+    { href: "/about", label: "About" },
+    { href: "/faq", label: "FAQ" },
+    { href: "/contact", label: "Contact" },
   ];
 
   const faqs = [
@@ -114,7 +332,7 @@ export default function VinAuditLanding() {
     {
       id: "speed",
       q: "How long does it take?",
-      a: "Instant delivery. Most reports are ready in seconds after payment, available for download and sent to your email.",
+      a: "Instant email delivery. Most reports are ready in seconds after payment and sent directly to your email address.",
     },
     {
       id: "coverage",
@@ -130,6 +348,11 @@ export default function VinAuditLanding() {
       id: "refunds",
       q: "What if my VIN is invalid or no data is found?",
       a: "Our system validates VINs before checkout. If a VIN is not found, you will not be charged. If there's an issue, contact support and we'll help right away.",
+    },
+    {
+      id: "format",
+      q: "How will I receive my report?",
+      a: "Your vehicle history reports will be sent directly to your email address as PDF files. Check your inbox (and spam folder) within 5 minutes of payment. The report links remain active for 60 days.",
     },
   ];
 
@@ -171,132 +394,514 @@ export default function VinAuditLanding() {
       </header>
 
       {/* Hero */}
-      <section className="relative overflow-hidden">
+      <section className="relative overflow-hidden bg-white">
         <div className="absolute inset-0 -z-10">
-          <div className="absolute inset-0 bg-gradient-to-b from-[#F2F4F8] to-white" />
-          <div className="absolute inset-x-0 top-0 h-72 bg-[url('https://images.unsplash.com/photo-1502877338535-766e1452684a?q=80&w=1974&auto=format&fit=crop')] bg-cover bg-center opacity-20" />
+          <div className="absolute inset-0 bg-gradient-to-b from-slate-50 to-white" />
         </div>
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-12 lg:py-20">
-          <div className="grid lg:grid-cols-2 gap-10 items-center">
-            <div>
-              <h1 className="text-3xl sm:text-4xl lg:text-5xl font-extrabold leading-tight text-[#003366]">Get Your Carfax or AutoCheck Report Instantly</h1>
-              <p className="mt-3 text-slate-700 text-lg">Check any VIN number and get full vehicle history in seconds.</p>
+        <div className="mx-auto max-w-5xl px-4 sm:px-6 lg:px-8 py-16 lg:py-20">
+          <div className="text-center">
+            <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold text-[#003366] leading-tight mb-6">
+              Get Your Vehicle Report
+              <span className="block text-[#0099FF]">Instantly</span>
+            </h1>
+            <p className="text-xl text-slate-600 max-w-2xl mx-auto mb-10">
+              Professional Carfax and AutoCheck reports delivered in seconds
+            </p>
 
-              {/* VIN form */}
-              <form onSubmit={handleCheck} className="mt-6" id="checkout">
-                <label htmlFor="vin" className="block text-sm font-medium text-slate-700">Enter 17‑character VIN</label>
-                <div className="mt-2 flex flex-col sm:flex-row gap-3">
+            {/* VIN Form */}
+            <div className="max-w-2xl mx-auto">
+              <form onSubmit={handleCheck} className="space-y-6" id="checkout">
+                {/* VIN Input */}
+                <div>
                   <input
                     id="vin"
                     value={vin}
                     onChange={(e) => setVin(e.target.value.toUpperCase())}
-                    placeholder="e.g. 1HGCM82633A004352"
-                    className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 shadow-sm focus:outline-none focus:ring-4 focus:ring-[#0099FF]/20"
-                    inputMode="text"
+                    placeholder="Enter 17-character VIN"
+                    className={`w-full h-14 rounded-xl border px-4 text-lg font-mono tracking-wide focus:outline-none focus:ring-2 ${
+                      vin.length > 0 && !vinValid 
+                        ? 'border-red-300 focus:border-red-500 focus:ring-red-500/20' 
+                        : 'border-slate-300 focus:border-[#0099FF] focus:ring-[#0099FF]/20'
+                    }`}
+                    maxLength={17}
                   />
-                  <div className="flex items-center gap-2 sm:w-auto">
-                    <select
-                      className="rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm"
-                      value={reportType}
-                      onChange={(e) => setReportType(e.target.value)}
-                      aria-label="Choose report type"
-                    >
-                      <option value="carfax">Carfax</option>
-                      <option value="autocheck">AutoCheck</option>
-                    </select>
-                    <button
-                      type="submit"
-                      className={`inline-flex items-center justify-center rounded-xl px-5 py-3 font-semibold text-white shadow transition ${vinValid ? 'bg-[#0099FF] hover:shadow-md' : 'bg-slate-400 cursor-not-allowed'}`}
-                      disabled={!vinValid}
-                    >
-                      Check Vehicle Now
-                    </button>
+                </div>
+
+                {/* VIN Validation Feedback */}
+                {vin.length > 0 && !vinValid && (
+                  <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+                    <div className="flex items-start gap-3 text-left">
+                      <div className="w-5 h-5 text-red-500 mt-0.5">
+                        <svg fill="currentColor" viewBox="0 0 20 20">
+                          <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                        </svg>
+                      </div>
+                      <div className="text-left">
+                        <h4 className="text-sm font-semibold text-red-800 mb-1 text-left">Invalid VIN Number</h4>
+                        <p className="text-sm text-red-700 text-left">
+                          Please enter a valid 17-character VIN. VINs cannot contain the letters I, O, or Q.
+                        </p>
+                        <p className="text-xs text-red-600 mt-2 text-left">
+                          Current length: {vin.length}/17 characters
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Vehicle Information Display */}
+                {vinValid && (vehicleInfo || isLoadingVehicleInfo) && (
+                  <div className="bg-gradient-to-r from-slate-50 to-blue-50 rounded-xl border border-slate-200 p-5">
+                    <h3 className="text-sm font-semibold text-slate-700 mb-4 flex items-center gap-2">
+                      <div className="w-8 h-8 bg-[#003366] rounded-lg flex items-center justify-center">
+                        <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
+                      </div>
+                      Vehicle Information
+                    </h3>
+                    
+                    {isLoadingVehicleInfo ? (
+                      <div className="flex items-center gap-2 text-sm text-slate-500">
+                        <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                        </svg>
+                        Loading vehicle information...
+                      </div>
+                    ) : vehicleInfo && vehicleInfo.data ? (
+                      <div className="space-y-3">
+                        <div className="grid grid-cols-3 gap-4">
+                          {vehicleInfo.data.brand && (
+                            <div className="bg-white rounded-lg p-3 border border-slate-100">
+                              <div className="text-xs text-slate-500 uppercase tracking-wide mb-1">Brand</div>
+                              <div className="font-semibold text-slate-900">{vehicleInfo.data.brand}</div>
+                            </div>
+                          )}
+                          {vehicleInfo.data.model && (
+                            <div className="bg-white rounded-lg p-3 border border-slate-100">
+                              <div className="text-xs text-slate-500 uppercase tracking-wide mb-1">Model</div>
+                              <div className="font-semibold text-slate-900">{vehicleInfo.data.model}</div>
+                            </div>
+                          )}
+                          {vehicleInfo.data.year && (
+                            <div className="bg-white rounded-lg p-3 border border-slate-100">
+                              <div className="text-xs text-slate-500 uppercase tracking-wide mb-1">Year</div>
+                              <div className="font-semibold text-slate-900">{vehicleInfo.data.year}</div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ) : vehicleInfo && vehicleInfo.error ? (
+                      <div className="text-sm text-red-600">
+                        {vehicleInfo.message || 'Unable to fetch vehicle information'}
+                      </div>
+                    ) : null}
+                  </div>
+                )}
+
+                {/* Report Type Selection */}
+                <div className="space-y-6">
+                  <div className="text-center">
+                    <h3 className="text-2xl font-bold text-slate-900 mb-3">Choose Your Report Type</h3>
+                    <p className="text-slate-600">Select the vehicle history report that best fits your needs</p>
+                  </div>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {/* Carfax Option */}
+                    <label className={`relative cursor-pointer rounded-xl border-2 p-6 transition-all hover:shadow-md ${
+                      reportType === 'carfax' 
+                        ? 'border-[#0099FF] bg-[#0099FF]/5 shadow-md' 
+                        : reportAvailability.carfax === false
+                        ? 'border-red-200 bg-red-50 cursor-not-allowed opacity-60'
+                        : 'border-slate-200 hover:border-[#0099FF]/30 bg-white'
+                    }`}>
+                      <input
+                        type="radio"
+                        name="reportType"
+                        value="carfax"
+                        checked={reportType === 'carfax'}
+                        onChange={(e) => setReportType(e.target.value)}
+                        disabled={reportAvailability.carfax === false}
+                        className="sr-only"
+                      />
+                      
+                      <div className="text-center">
+                        {/* Service Icon */}
+                        <div className="flex items-center justify-center mb-4">
+                          <div className={`w-12 h-12 rounded-full flex items-center justify-center font-bold text-lg ${
+                            reportType === 'carfax' ? 'bg-[#0099FF] text-white' : 'bg-slate-100 text-slate-600'
+                          }`}>
+                            C
+                          </div>
+                        </div>
+                        
+                        <h4 className="text-lg font-bold text-slate-900 mb-2">Carfax</h4>
+                        <p className="text-sm text-slate-600 mb-4">Most comprehensive report with detailed service records</p>
+                        
+                        {/* Availability Status */}
+                        {vinValid && (
+                          <div className="mb-4">
+                            {isChecking ? (
+                              <div className="flex items-center justify-center gap-2 text-sm text-slate-500">
+                                <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24">
+                                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                                </svg>
+                                Checking...
+                              </div>
+                            ) : reportAvailability.carfax === true ? (
+                              <div className="flex items-center justify-center gap-2 text-sm text-green-600 bg-green-50 rounded-lg py-2 px-3">
+                                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                                  <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                </svg>
+                                Available
+                              </div>
+                            ) : reportAvailability.carfax === false ? (
+                              <div className="flex items-center justify-center gap-2 text-sm text-red-600 bg-red-50 rounded-lg py-2 px-3">
+                                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                                  <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                                </svg>
+                                Not Available
+                              </div>
+                            ) : null}
+                          </div>
+                        )}
+                        
+                        <div className="space-y-1 text-center">
+                          <div className="text-xl font-bold text-[#0099FF]">$9.99</div>
+                          <div className="text-xs text-slate-400 line-through">$44.99</div>
+                        </div>
+                        
+                        {reportType === 'carfax' && reportAvailability.carfax !== false && (
+                          <div className="absolute top-4 right-4">
+                            <div className="w-6 h-6 rounded-full bg-[#0099FF] flex items-center justify-center">
+                              <svg className="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 20 20">
+                                <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                              </svg>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </label>
+
+                    {/* AutoCheck Option */}
+                    <label className={`relative cursor-pointer rounded-xl border-2 p-6 transition-all hover:shadow-md ${
+                      reportType === 'autocheck' 
+                        ? 'border-[#0099FF] bg-[#0099FF]/5 shadow-md' 
+                        : reportAvailability.autocheck === false
+                        ? 'border-red-200 bg-red-50 cursor-not-allowed opacity-60'
+                        : 'border-slate-200 hover:border-[#0099FF]/30 bg-white'
+                    }`}>
+                      <input
+                        type="radio"
+                        name="reportType"
+                        value="autocheck"
+                        checked={reportType === 'autocheck'}
+                        onChange={(e) => setReportType(e.target.value)}
+                        disabled={reportAvailability.autocheck === false}
+                        className="sr-only"
+                      />
+                      
+                      <div className="text-center">
+                        {/* Service Icon */}
+                        <div className="flex items-center justify-center mb-4">
+                          <div className={`w-12 h-12 rounded-full flex items-center justify-center font-bold text-lg ${
+                            reportType === 'autocheck' ? 'bg-[#0099FF] text-white' : 'bg-slate-100 text-slate-600'
+                          }`}>
+                            A
+                          </div>
+                        </div>
+                        
+                        <h4 className="text-lg font-semibold text-slate-900 mb-2">AutoCheck</h4>
+                        <p className="text-sm text-slate-600 mb-4">Great value option with auction data and scoring</p>
+                        
+                        {/* Availability Status */}
+                        {vinValid && (
+                          <div className="mb-4">
+                            {isChecking ? (
+                              <div className="flex items-center justify-center gap-2 text-sm text-slate-500">
+                                <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24">
+                                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                                </svg>
+                                Checking...
+                              </div>
+                            ) : reportAvailability.autocheck === true ? (
+                              <div className="flex items-center justify-center gap-2 text-sm text-green-600 bg-green-50 rounded-lg py-2 px-3">
+                                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                                  <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                </svg>
+                                Available
+                              </div>
+                            ) : reportAvailability.autocheck === false ? (
+                              <div className="flex items-center justify-center gap-2 text-sm text-red-600 bg-red-50 rounded-lg py-2 px-3">
+                                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                                  <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                                </svg>
+                                Not Available
+                              </div>
+                            ) : null}
+                          </div>
+                        )}
+                        
+                        <div className="space-y-1 text-center">
+                          <div className="text-xl font-bold text-[#0099FF]">$9.99</div>
+                          <div className="text-sm text-slate-400 line-through">$29.99</div>
+                        </div>
+                        
+                        {reportType === 'autocheck' && reportAvailability.autocheck !== false && (
+                          <div className="absolute top-4 right-4">
+                            <div className="w-6 h-6 rounded-full bg-[#0099FF] flex items-center justify-center">
+                              <svg className="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 20 20">
+                                <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                              </svg>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </label>
+
+                    {/* Both Reports Bundle Option */}
+                    <label className={`group relative cursor-pointer rounded-xl border-2 p-6 transition-colors duration-200 hover:shadow-md ${
+                      reportType === 'both' 
+                        ? 'border-[#003366] bg-blue-50 shadow-md' 
+                        : (reportAvailability.carfax === false || reportAvailability.autocheck === false)
+                        ? 'border-red-200 bg-red-50 cursor-not-allowed opacity-60'
+                        : 'border-slate-200 hover:border-[#003366] bg-white'
+                    }`}>
+                      <input
+                        type="radio"
+                        name="reportType"
+                        value="both"
+                        checked={reportType === 'both'}
+                        onChange={(e) => setReportType(e.target.value)}
+                        disabled={reportAvailability.carfax === false || reportAvailability.autocheck === false}
+                        className="sr-only"
+                      />
+                      
+                      {/* Best Value Badge */}
+                      <div className="absolute -top-2 left-1/2 transform -translate-x-1/2">
+                        <div className="bg-purple-600 text-white text-xs font-medium px-3 py-1 rounded-full">
+                          BEST VALUE
+                        </div>
+                      </div>
+                      
+                      <div className="text-center">
+                        {/* Service Icon */}
+                        <div className="flex items-center justify-center mb-4">
+                          <div className={`w-12 h-12 rounded-full flex items-center justify-center font-semibold text-lg ${
+                            reportType === 'both' ? 'bg-[#003366] text-white' : 'bg-slate-100 text-slate-600'
+                          }`}>
+                            C+A
+                          </div>
+                        </div>
+                        
+                        <h4 className="text-lg font-semibold text-slate-900 mb-2">Both Reports</h4>
+                        <p className="text-slate-600 mb-4 text-sm">Complete coverage from both industry leaders</p>
+                        
+                        {/* Availability Status */}
+                        {vinValid && (
+                          <div className="mb-4">
+                            {isChecking ? (
+                              <div className="flex items-center justify-center gap-2 text-sm text-slate-500">
+                                <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24">
+                                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                                </svg>
+                                Checking...
+                              </div>
+                            ) : (reportAvailability.carfax === true && reportAvailability.autocheck === true) ? (
+                              <div className="flex items-center justify-center gap-2 text-sm text-green-600 bg-green-50 rounded-lg py-2 px-3">
+                                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                                  <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                </svg>
+                                Both Available
+                              </div>
+                            ) : (reportAvailability.carfax === false || reportAvailability.autocheck === false) ? (
+                              <div className="flex items-center justify-center gap-2 text-sm text-red-600 bg-red-50 rounded-lg py-2 px-3">
+                                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                                  <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                                </svg>
+                                {reportAvailability.carfax === false && reportAvailability.autocheck === false 
+                                  ? 'Neither Available' 
+                                  : reportAvailability.carfax === false 
+                                  ? 'Carfax Not Available'
+                                  : 'AutoCheck Not Available'
+                                }
+                              </div>
+                            ) : null}
+                          </div>
+                        )}
+                        
+                        <div className="space-y-1 text-center">
+                          <div className="text-xl font-bold text-[#003366]">$17.99</div>
+                          <div className="text-sm text-slate-400 line-through">$19.98</div>
+                        </div>
+                        
+                        {reportType === 'both' && (reportAvailability.carfax === true && reportAvailability.autocheck === true) && (
+                          <div className="absolute top-4 right-4">
+                            <div className="w-6 h-6 rounded-full bg-[#003366] flex items-center justify-center">
+                              <svg className="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 20 20">
+                                <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                              </svg>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </label>
                   </div>
                 </div>
-                <p className="mt-2 text-xs text-slate-500">We validate VINs before checkout. No charge if a report isn't available.</p>
+
+                {/* Submit Button */}
+                <button
+                  type="submit"
+                  disabled={!vinValid || isChecking || (reportType !== 'both' && reportAvailability[reportType as keyof typeof reportAvailability] === false) || (reportType === 'both' && reportAvailability.carfax === false && reportAvailability.autocheck === false)}
+                  className={`w-full h-14 rounded-xl font-semibold text-white transition transform ${
+                    !vinValid 
+                      ? 'bg-slate-400 cursor-not-allowed' 
+                      : isChecking
+                      ? 'bg-slate-400 cursor-not-allowed'
+                      : (reportType !== 'both' && reportAvailability[reportType as keyof typeof reportAvailability] === false) || (reportType === 'both' && reportAvailability.carfax === false && reportAvailability.autocheck === false)
+                      ? 'bg-red-400 cursor-not-allowed'
+                      : 'bg-[#0099FF] hover:bg-[#0088DD] hover:scale-105 active:scale-95'
+                  }`}
+                >
+                  {!vinValid 
+                    ? 'Enter Valid VIN' 
+                    : isChecking 
+                    ? 'Processing...'
+                    : (reportType !== 'both' && reportAvailability[reportType as keyof typeof reportAvailability] === false)
+                    ? `${reportType === 'carfax' ? 'Carfax' : 'AutoCheck'} Not Available`
+                    : (reportType === 'both' && reportAvailability.carfax === false && reportAvailability.autocheck === false)
+                    ? 'No Reports Available'
+                    : reportType === 'both'
+                    ? 'Buy Both Reports - $17.99'
+                    : `Buy ${reportType === 'carfax' ? 'Carfax' : 'AutoCheck'} Report - $9.99`
+                  }
+                </button>
+
+                <p className="text-sm text-slate-500 text-center">
+                  ✓ Email delivery • ✓ Secure payment • ✓ No charge if report unavailable
+                </p>
               </form>
-
-              {/* Trust inline */}
-              <div className="mt-6 grid grid-cols-2 sm:grid-cols-4 gap-4">
-                <Feature icon={CheckIcon} title="Trusted by thousands" sub="Car buyers & dealers" />
-                <Feature icon={LockIcon} title="Secure payments" sub="PCI-compliant" />
-                <Feature icon={ZapIcon} title="Instant delivery" sub="Ready in seconds" />
-                <Feature icon={ShieldIcon} title="Official sources" sub="Carfax & AutoCheck" />
-              </div>
-
-            </div>
-            <div className="relative">
-              <div className="rounded-2xl border border-slate-200 bg-white/70 backdrop-blur shadow-xl p-6">
-                <div className="flex items-center gap-3">
-                  {CarIcon}
-                  <div>
-                    <div className="font-semibold text-slate-900">VIN Decoder Preview</div>
-                    <div className="text-sm text-slate-600">Basic make/model/year from VIN (demo)</div>
-                  </div>
-                </div>
-                <div className="mt-4 grid grid-cols-2 gap-4 text-sm">
-                  <Spec label="Make" value={vinValid ? mockDecode(vin).make : "—"} />
-                  <Spec label="Model" value={vinValid ? mockDecode(vin).model : "—"} />
-                  <Spec label="Year" value={vinValid ? mockDecode(vin).year : "—"} />
-                  <Spec label="Assembly" value={vinValid ? mockDecode(vin).country : "—"} />
-                </div>
-                <div className="mt-6 flex items-center gap-3">
-                  <button onClick={() => setShowSample(true)} className="rounded-xl border border-slate-300 px-4 py-2 text-sm hover:bg-slate-50">View Sample Report</button>
-                  <a href="#compare" className="text-sm text-[#003366] underline underline-offset-4">Compare Carfax vs AutoCheck</a>
-                </div>
-              </div>
             </div>
           </div>
         </div>
       </section>
 
-      {/* Comparison */}
-      <section id="compare" className="py-14 bg-[#F2F4F8]">
+      {/* Recent Reports section */}
+      <section className="py-12 bg-[#F2F4F8]">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="text-center max-w-3xl mx-auto">
-            <h2 className="text-2xl sm:text-3xl font-extrabold text-[#003366]">Carfax vs AutoCheck</h2>
-            <p className="mt-2 text-slate-600">Choose the report that fits your needs. Both pull from official data sources.</p>
+          <div className="text-center mb-8">
+            <h2 className="text-2xl sm:text-3xl font-extrabold text-[#003366] mb-2">Recent Vehicle Reports</h2>
+            <p className="text-lg text-slate-600">Join thousands of satisfied customers who trust VIN AUDIT</p>
           </div>
-
-          <div className="mt-8 grid md:grid-cols-2 gap-6">
-            <ComparisonCard
-              name="Carfax"
-              price="$39.99"
-              bullets={["Deep accident history", "Service & maintenance records", "Title & odometer checks", "Open recalls"]}
-            />
-            <ComparisonCard
-              name="AutoCheck"
-              price="$29.99"
-              bullets={["Auction & score insights", "Multiple owner timeline", "Title & odometer checks", "Theft & salvage data"]}
-            />
-          </div>
-
-          {/* Pricing bundles */}
-          <div className="mt-8">
-            <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-              <div className="grid md:grid-cols-3 gap-6 items-center">
-                <div>
-                  <div className="font-semibold text-slate-900">Bundle & Save</div>
-                  <div className="text-sm text-slate-600">For dealers and frequent buyers.</div>
-                </div>
-                <div className="md:col-span-2 grid sm:grid-cols-3 gap-3">
-                  <Bundle label="2 Reports" price="$69.00" note="Mix & match"/>
-                  <Bundle label="5 Reports" price="$159.00" note="Best value"/>
-                  <Bundle label="10 Reports" price="$299.00" note="For dealers"/>
-                </div>
-              </div>
+          
+          <div className="bg-white rounded-2xl shadow-lg overflow-hidden">
+            <div className="px-6 py-4 bg-[#003366] text-white">
+              <h3 className="text-lg font-semibold flex items-center gap-2">
+                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                </svg>
+                Latest Vehicle History Reports
+              </h3>
+            </div>
+            
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead className="bg-slate-50">
+                  <tr>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">VIN</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Vehicle</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Report Type</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Date</th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-slate-200">
+                  {isLoadingReports ? (
+                    <tr>
+                      <td colSpan={4} className="px-6 py-8 text-center">
+                        <div className="flex items-center justify-center">
+                          <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-[#0099FF]" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                          </svg>
+                          Loading recent reports...
+                        </div>
+                      </td>
+                    </tr>
+                  ) : recentReports.length === 0 ? (
+                    <tr>
+                      <td colSpan={4} className="px-6 py-8 text-center text-slate-500">
+                        No recent reports available
+                      </td>
+                    </tr>
+                  ) : (
+                    recentReports.map((report, index) => (
+                      <tr key={index} className="hover:bg-slate-50 transition-colors">
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <span className="text-sm font-mono text-slate-900 bg-slate-100 px-2 py-1 rounded">
+                            {report.vin.slice(0, 8)}***{report.vin.slice(-3)}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="flex items-center">
+                            <div className="w-8 h-8 bg-[#0099FF] rounded-full flex items-center justify-center mr-3">
+                              <svg className="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 20 20">
+                                <path d="M8 16.5a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zM15 16.5a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0z" />
+                                <path d="M3 4a1 1 0 00-1 1v10a1 1 0 001 1h1.05a2.5 2.5 0 014.9 0H10a1 1 0 001-1V5a1 1 0 00-1-1H3zM14 7a1 1 0 00-1 1v6.05A2.5 2.5 0 0115.95 16H17a1 1 0 001-1V8a1 1 0 00-1-1h-3z" />
+                              </svg>
+                            </div>
+                            <div>
+                              <div className="text-sm font-medium text-slate-900">{report.brand} {report.model}</div>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${
+                            report.reportType.toLowerCase() === 'carfax' 
+                              ? 'bg-blue-100 text-blue-800' 
+                              : 'bg-green-100 text-green-800'
+                          }`}>
+                            {report.reportType.charAt(0).toUpperCase() + report.reportType.slice(1)}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-500">
+                          {new Date(report.date).toLocaleDateString('en-US', { 
+                            month: 'short', 
+                            day: 'numeric',
+                            year: 'numeric'
+                          })}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+            
+            <div className="px-6 py-4 bg-slate-50 text-center">
+              <p className="text-sm text-slate-600">
+                <span className="inline-flex items-center gap-1">
+                  <svg className="w-4 h-4 text-green-500" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                  </svg>
+                  Over 50,000+ reports delivered successfully
+                </span>
+              </p>
             </div>
           </div>
         </div>
       </section>
 
       {/* Trust badges section */}
-      <section className="py-12">
+      <section className="py-8">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-6">
             <TrustBadge icon={CheckIcon} title="Trusted by thousands" sub="Verified customer reviews" />
             <TrustBadge icon={ShieldIcon} title="Secure Payments" sub="SSL & PCI-DSS" />
-            <TrustBadge icon={ZapIcon} title="Instant Delivery" sub="Download immediately" />
+            <TrustBadge icon={ZapIcon} title="Email Delivery" sub="Sent to your inbox" />
             <TrustBadge icon={DocIcon} title="Official Sources" sub="Carfax & AutoCheck" />
           </div>
         </div>
@@ -363,25 +968,23 @@ export default function VinAuditLanding() {
             <div>
               <div className="font-semibold text-slate-900">Company</div>
               <ul className="mt-3 space-y-2 text-sm">
-                <li><a href="#about" className="hover:text-[#003366]">About</a></li>
-                <li><a href="#compare" className="hover:text-[#003366]">Compare Reports</a></li>
-                <li><a href="#faq" className="hover:text-[#003366]">FAQ</a></li>
-                <li><a href="#contact" className="hover:text-[#003366]">Contact</a></li>
+                <li><a href="/about" className="hover:text-[#003366]">About</a></li>
+                <li><a href="/faq" className="hover:text-[#003366]">FAQ</a></li>
+                <li><a href="/contact" className="hover:text-[#003366]">Contact</a></li>
               </ul>
             </div>
             <div>
               <div className="font-semibold text-slate-900">Support</div>
               <ul className="mt-3 space-y-2 text-sm">
                 <li><a href="#" className="hover:text-[#003366]">Help Center</a></li>
-                <li><a href="#" className="hover:text-[#003366]">Refund Policy</a></li>
-                <li><a href="#" className="hover:text-[#003366]">Terms & Privacy</a></li>
+                <li><a href="/refund-policy" className="hover:text-[#003366]">Refund Policy</a></li>
+                <li><a href="/terms-privacy" className="hover:text-[#003366]">Terms & Privacy</a></li>
               </ul>
             </div>
             <div>
               <div className="font-semibold text-slate-900">Get in touch</div>
               <ul className="mt-3 space-y-2 text-sm">
-                <li>Email: <a href="mailto:support@vinaudit.example" className="underline">support@vinaudit.example</a></li>
-                <li>Social: <a href="#" className="underline">Twitter</a> · <a href="#" className="underline">Facebook</a></li>
+                <li>Email: <a href="mailto:support@vinaudit.co" className="underline">support@vinaudit.co</a></li>
               </ul>
               <p className="mt-4 text-xs text-slate-500">Disclaimer: VIN AUDIT is an independent reseller of official vehicle history reports. Carfax and AutoCheck are trademarks of their respective owners.</p>
             </div>
@@ -390,7 +993,7 @@ export default function VinAuditLanding() {
       </footer>
 
       {/* Floating chat / WhatsApp button */}
-      <a href="https://wa.me/15551234567" target="_blank" rel="noopener noreferrer" className="fixed bottom-5 right-5 inline-flex items-center gap-2 rounded-full bg-[#25D366] text-white px-4 py-3 shadow-lg hover:shadow-xl">
+      <a href="https://wa.me/40750255771" target="_blank" rel="noopener noreferrer" className="fixed bottom-5 right-5 inline-flex items-center gap-2 rounded-full bg-[#25D366] text-white px-4 py-3 shadow-lg hover:shadow-xl">
         {ChatIcon}
         <span className="text-sm font-semibold">Chat</span>
       </a>
